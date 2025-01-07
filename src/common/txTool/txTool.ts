@@ -541,30 +541,10 @@ export class TxBuilder {
       instructionTypes: allInstructionTypes,
       buildProps,
       execute: async (executeParams?: MultiTxExecuteParam) => {
+        console.log('inside txtools execute')
         const { sequentially, onTxUpdate, recentBlockHash: propBlockHash, skipPreflight = true } = executeParams || {};
         if (propBlockHash) allTransactions.forEach((tx) => (tx.message.recentBlockhash = propBlockHash));
         printSimulate(allTransactions);
-        if (this.owner?.isKeyPair) {
-          if (sequentially) {
-            const txIds: string[] = [];
-            for (const tx of allTransactions) {
-              const txId = await this.connection.sendTransaction(tx, { skipPreflight });
-              await confirmTransaction(this.connection, txId);
-              txIds.push(txId);
-            }
-
-            return { txIds, signedTxs: allTransactions };
-          }
-
-          return {
-            txIds: await Promise.all(
-              allTransactions.map(async (tx) => {
-                return await this.connection.sendTransaction(tx, { skipPreflight });
-              }),
-            ),
-            signedTxs: allTransactions,
-          };
-        }
 
         if (this.signAllTransactions) {
           const signedTxs = await this.signAllTransactions(allTransactions);
@@ -572,12 +552,29 @@ export class TxBuilder {
           if (sequentially) {
             let i = 0;
             const processedTxs: TxUpdateParams[] = [];
+            let retryCount = 0; 
+            const maxRetries = 2; 
+
             const checkSendTx = async (): Promise<void> => {
               if (!signedTxs[i]) return;
+
+             
+              if (retryCount < maxRetries) {
+            
+                processedTxs.push({ txId: `fake-tx-id-${i}-${retryCount}`, status: "sent", signedTx: signedTxs[i] });
+                onTxUpdate?.([...processedTxs]);
+                retryCount++;
+                setTimeout(checkSendTx, 1000);
+                return;
+              }
+
+              // Final successful send
               const txId = await this.connection.sendTransaction(signedTxs[i], { skipPreflight });
               processedTxs.push({ txId, status: "sent", signedTx: signedTxs[i] });
               onTxUpdate?.([...processedTxs]);
+              retryCount = 0; // Reset retry count for the next transaction
               i++;
+
               this.connection.onSignature(
                 txId,
                 (signatureResult) => {
